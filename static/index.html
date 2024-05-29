@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Review Tool</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.23.0/themes/prism.min.css" rel="stylesheet"/>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            position: relative;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        input, button, textarea {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .code-block {
+            background-color: #f4f4f4;
+            border: 1px solid #ccc;
+            padding: 10px;
+            white-space: pre;
+            overflow: auto;
+            max-height: 400px;
+        }
+        .comment {
+            margin: 10px 0;
+        }
+        .code-container {
+            display: flex;
+            justify-content: space-between;
+        }
+        .code-block-wrapper {
+            width: 48%;
+        }
+        .line-number {
+            display: inline-block;
+            width: 30px;
+            text-align: right;
+            margin-right: 10px;
+            user-select: none;
+            color: #888;
+        }
+        .comment-input {
+            display: block;
+            margin-top: 5px;
+        }
+        .commented-line {
+            background-color: #f8d7da;
+            position: relative;
+        }
+        .custom-tooltip {
+            display: none;
+            position: absolute;
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #721c24;
+            border-radius: 5px;
+            padding: 5px;
+            z-index: 1000;
+        }
+        .inline-comment {
+            display: none;
+            position: absolute;
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 5px;
+            z-index: 1000;
+            width: 300px;
+        }
+        .inline-comment input, .inline-comment textarea {
+            width: 100%;
+            margin: 5px 0;
+        }
+        .inline-comment button {
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Code Review Tool</h1>
+        <div id="auth-section">
+            <h2>Create Account</h2>
+            <input type="text" id="signup-username" placeholder="Username">
+            <input type="password" id="signup-password" placeholder="Password">
+            <button onclick="createAccount()">Sign Up</button>
+            <h2>Login</h2>
+            <input type="text" id="login-username" placeholder="Username">
+            <input type="password" id="login-password" placeholder="Password">
+            <button onclick="login()">Login</button>
+        </div>
+        <div id="file-upload-section" style="display:none;">
+            <h2>Upload File</h2>
+            <input type="file" id="file-input">
+            <button onclick="uploadFile()">Upload</button>
+        </div>
+        <div id="file-list-section" style="display:none;">
+            <h2>Files</h2>
+            <div id="file-list"></div>
+        </div>
+        <div id="file-view-section" style="display:none;">
+            <h2 id="file-title">Selected File</h2>
+            <div class="code-container">
+                <div class="code-block-wrapper">
+                    <h3>Original Code</h3>
+                    <div id="original-code" class="code-block"></div>
+                </div>
+                <div class="code-block-wrapper">
+                    <h3>Code with Comments</h3>
+                    <div id="commented-code" class="code-block"></div>
+                </div>
+            </div>
+            <h3>Add Comment</h3>
+            <input type="text" id="comment-lines" placeholder="Line numbers (e.g., 4-7)" class="comment-input">
+            <textarea id="comment-text" placeholder="Comment" class="comment-input"></textarea>
+            <button id="add-comment-btn" onclick="addComment()" disabled>Add Comment</button>
+            <h3>Comments</h3>
+            <div>
+                <input type="text" id="search-comments" placeholder="Search comments" onkeyup="filterComments()">
+            </div>
+            <div id="comment-list"></div>
+        </div>
+    </div>
+    <div class="custom-tooltip" id="custom-tooltip"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.23.0/prism.min.js"></script>
+    <script>
+        let currentFileID;
+        const tooltip = document.getElementById('custom-tooltip');
+        const userColors = {};
+
+        async function createAccount() {
+            const username = document.getElementById("signup-username").value;
+            const password = document.getElementById("signup-password").value;
+            const response = await fetch("/create-account", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ username, password })
+            });
+            if (response.ok) {
+                alert("Account created");
+            } else if (response.status === 409) {
+                alert("Username already exists. Please choose another.");
+            } else {
+                alert("Error creating account");
+            }
+        }
+
+        async function login() {
+            const username = document.getElementById("login-username").value;
+            const password = document.getElementById("login-password").value;
+            const response = await fetch("/login", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ username, password })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                document.cookie = `token=${data.token}; path=/`;
+                alert("Login successful");
+                document.getElementById("auth-section").style.display = "none";
+                document.getElementById("file-upload-section").style.display = "block";
+                document.getElementById("file-list-section").style.display = "block";
+                fetchFiles();
+            } else {
+                alert("Login failed");
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById("file-input");
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.onload = async function(event) {
+                const content = event.target.result;
+                const token = getCookie("token");
+                const response = await fetch("/upload-file", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ filename: file.name, content })
+                });
+                if (response.ok) {
+                    alert("File uploaded");
+                    fetchFiles();
+                } else {
+                    alert("Error uploading file");
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        async function fetchFiles() {
+            const response = await fetch("/files");
+            const files = await response.json();
+            displayFiles(files);
+        }
+
+        function displayFiles(files) {
+            const fileList = document.getElementById("file-list");
+            fileList.innerHTML = "";
+
+            files.forEach(file => {
+                const div = document.createElement("div");
+                div.innerText = file.filename;
+                div.style.cursor = "pointer";
+                div.onclick = () => viewFile(file);
+                fileList.appendChild(div);
+            });
+        }
+
+        async function viewFile(file) {
+            currentFileID = file.id;
+            document.getElementById("file-view-section").style.display = "block";
+            document.getElementById("file-title").innerText = `Selected File (${file.filename})`;
+            const originalCode = document.getElementById("original-code");
+            const commentedCode = document.getElementById("commented-code");
+
+            const lines = file.content.split('\n');
+            originalCode.innerHTML = '';
+            commentedCode.innerHTML = '';
+            lines.forEach((line, index) => {
+                const lineNumber = document.createElement('span');
+                lineNumber.classList.add('line-number');
+                lineNumber.innerText = index + 1;
+                const lineContent = document.createElement('span');
+                lineContent.innerText = line;
+                const lineElement = document.createElement('div');
+                lineElement.appendChild(lineNumber);
+                lineElement.appendChild(lineContent);
+                originalCode.appendChild(lineElement);
+
+                const commentedLine = document.createElement('div');
+                commentedLine.classList.add('line');
+                commentedLine.innerHTML = `<span class="line-number">${index + 1}</span><code class="language-javascript">${Prism.highlight(line, Prism.languages.javascript, 'javascript')}</code>`;
+                commentedLine.addEventListener('dblclick', () => showInlineCommentInput(index + 1, commentedLine));
+                commentedCode.appendChild(commentedLine);
+            });
+
+            fetchComments();
+
+            Prism.highlightAll();
+        }
+
+        async function addComment() {
+            const lines = document.getElementById("comment-lines").value.split('-').map(Number);
+            const lineStart = lines[0];
+            const lineEnd = lines[1] || lineStart;
+            const text = document.getElementById("comment-text").value;
+            if (!text.trim()) {
+                alert("Comment cannot be empty.");
+                return;
+            }
+            const token = getCookie("token");
+            const response = await fetch("/comment", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`
+                },
+                body: JSON.stringify({ file_id: currentFileID, line_start: lineStart, line_end: lineEnd, text })
+            });
+            if (response.ok) {
+                alert("Comment added");
+                document.getElementById("comment-lines").value = "";
+                document.getElementById("comment-text").value = "";
+                document.getElementById("add-comment-btn").disabled = true;
+                fetchComments();
+            } else if (response.status === 409) {
+                alert("Line range overlaps with an existing comment.");
+            } else {
+                const errorText = await response.text();
+                console.error("Error adding comment: Code already commented", errorText);
+                alert(`Error adding comment: ${errorText}`);
+            }
+        }
+
+        async function fetchComments() {
+            const response = await fetch(`/comments/${currentFileID}`);
+            const comments = await response.json();
+            const commentList = document.getElementById("comment-list");
+            const commentedCode = document.getElementById("commented-code");
+            commentList.innerHTML = '';
+            commentedCode.innerHTML = '';
+            const originalLines = document.getElementById("original-code").children;
+            const linesWithComments = {};
+            comments.forEach(comment => {
+                for (let i = comment.line_start; i <= comment.line_end; i++) {
+                    linesWithComments[i] = linesWithComments[i] || [];
+                    linesWithComments[i].push(comment);
+                }
+
+                const dateTime = new Date(comment.timestamp).toLocaleString();
+                const color = getUserColor(comment.username);
+
+                const div = document.createElement("div");
+                div.classList.add("comment");
+                div.style.color = color;
+                div.innerHTML = `Lines ${comment.line_start}-${comment.line_end} (${comment.username}): ${comment.text} <br><small>${dateTime}</small>`;
+                commentList.appendChild(div);
+            });
+
+            Array.from(originalLines).forEach((lineElement, index) => {
+                const lineNumber = index + 1;
+                const lineContent = lineElement.querySelector("span:nth-child(2)").innerText;
+                const commentedLine = document.createElement('div');
+                commentedLine.classList.add('line');
+                commentedLine.innerHTML = `<span class="line-number">${lineNumber}</span><span>${lineContent}</span>`;
+                if (linesWithComments[lineNumber]) {
+                    commentedLine.classList.add('commented-line');
+                    const tooltip = document.createElement('span');
+                    tooltip.classList.add('custom-tooltip');
+                    tooltip.innerHTML = linesWithComments[lineNumber].map(c => `${c.username}: ${c.text}`).join('<br>');
+                    document.body.appendChild(tooltip);
+
+                    commentedLine.addEventListener('mouseenter', function() {
+                        tooltip.style.display = 'block';
+                    });
+                    commentedLine.addEventListener('mouseleave', function() {
+                        tooltip.style.display = 'none';
+                    });
+                    commentedLine.addEventListener('mousemove', function(e) {
+                        tooltip.style.left = e.pageX + 'px';
+                        tooltip.style.top = e.pageY + 'px';
+                    });
+                }
+                commentedCode.appendChild(commentedLine);
+            });
+        }
+
+        function getUserColor(username) {
+            if (!userColors[username]) {
+                userColors[username] = `hsl(${Math.random() * 360}, 100%, 35%)`;
+            }
+            return userColors[username];
+        }
+
+        function filterComments() {
+            const searchInput = document.getElementById("search-comments").value.toLowerCase();
+            const comments = document.getElementById("comment-list").getElementsByClassName("comment");
+
+            Array.from(comments).forEach(comment => {
+                const text = comment.innerText.toLowerCase();
+                if (text.includes(searchInput)) {
+                    comment.style.display = "";
+                } else {
+                    comment.style.display = "none";
+                }
+            });
+        }
+
+        function getCookie(name) {
+            let cookieArr = document.cookie.split(";");
+            for (let i = 0; i < cookieArr.length; i++) {
+                let cookiePair = cookieArr[i].split("=");
+                if (name == cookiePair[0].trim()) {
+                    return decodeURIComponent(cookiePair[1]);
+                }
+            }
+            return null;
+        }
+
+        document.getElementById("comment-text").addEventListener("input", function() {
+            const addCommentBtn = document.getElementById("add-comment-btn");
+            addCommentBtn.disabled = !this.value.trim();
+        });
+    </script>
+</body>
+</html>
